@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.1.0"
+PROJECT_VERSION="0.1.1"
 
 ensure_dialog() {
   if ! command -v whiptail >/dev/null 2>&1; then

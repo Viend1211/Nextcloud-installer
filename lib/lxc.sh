@@ -31,7 +31,14 @@ download_debian_template() {
 
   [[ -n "$template" ]] || die "Debian 12/13 LXC template not found."
 
-  TEMPLATE_STORAGE="local"
+  # Find an active storage that supports container templates (vztmpl).
+  TEMPLATE_STORAGE="$(
+    pvesm status --content vztmpl 2>/dev/null |
+      awk 'NR>1 && $3=="active" {print $1; exit}'
+  )"
+
+  [[ -n "$TEMPLATE_STORAGE" ]] || die "No active Proxmox storage supporting vztmpl templates was found."
+
   TEMPLATE_PATH="$TEMPLATE_STORAGE:vztmpl/$template"
 
   if ! pveam list "$TEMPLATE_STORAGE" 2>/dev/null | awk '{print $1}' | grep -qx "$TEMPLATE_PATH"; then

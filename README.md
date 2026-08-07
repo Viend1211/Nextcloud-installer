@@ -1,5 +1,14 @@
 # Nextcloud Installer for Proxmox VE
 
+## v0.1.1
+
+Исправлено:
+- корректное определение активных Proxmox storage с поддержкой `rootdir`;
+- совместимость парсинга `pvesm status` с Proxmox VE 9;
+- автоматический выбор активного storage с поддержкой `vztmpl` для Debian LXC template;
+- при ошибке определения storage установщик теперь печатает `pvesm status` и `/etc/pve/storage.cfg` для диагностики.
+
+
 Интерактивный установщик **Nextcloud в LXC на Proxmox VE**.
 
 Проект рассчитан на сценарий, где сама система Nextcloud находится на хранилище Proxmox, а пользовательские файлы при необходимости размещаются на отдельном физическом HDD/SSD.

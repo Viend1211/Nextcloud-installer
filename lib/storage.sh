@@ -45,17 +45,32 @@ is_protected_disk() {
 
 select_pve_storage() {
   local opts=()
-  while read -r storage type avail active content; do
-    [[ "$active" == "1" ]] || continue
-    [[ "$content" == *rootdir* ]] || continue
-    opts+=("$storage" "$type, available ${avail:-unknown}")
-  done < <(pvesm status --content rootdir | awk 'NR>1 {print $1,$2,$6,$3,$7}')
+  local storage type status available percent
+
+  # `pvesm status --content rootdir` already filters storages that support
+  # container root filesystems. Output columns are:
+  # Name Type Status Total Used Available %
+  while read -r storage type status available percent; do
+    [[ "$status" == "active" ]] || continue
+    opts+=("$storage" "$type | available ${available:-unknown} | ${percent:-N/A}")
+  done < <(
+    pvesm status --content rootdir 2>/dev/null |
+      awk 'NR>1 {print $1,$2,$3,$6,$7}'
+  )
 
   if [[ ${#opts[@]} -eq 0 ]]; then
-    die "No active Proxmox storage with rootdir support was found."
+    echo >&2
+    echo "Current Proxmox storage status:" >&2
+    pvesm status >&2 || true
+    echo >&2
+    echo "Storage configuration:" >&2
+    cat /etc/pve/storage.cfg >&2 || true
+    die "No ACTIVE Proxmox storage supporting LXC rootdir was found."
   fi
 
-  SYSTEM_STORAGE="$(menu "System storage" "Where should the Nextcloud LXC system disk be stored?" "${opts[@]}")"
+  SYSTEM_STORAGE="$(menu "System storage" \
+    "Where should the Nextcloud LXC system disk be stored?" \
+    "${opts[@]}")"
 }
 
 select_data_disk() {
