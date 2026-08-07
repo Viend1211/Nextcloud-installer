@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.1.4"
+PROJECT_VERSION="0.1.5"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"
@@ -143,6 +143,69 @@ get_next_ctid() {
 
 validate_ipv4_cidr() {
   [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]
+}
+
+detect_public_ipv4() {
+  local ip=""
+  local url
+
+  for url in \
+    "https://api.ipify.org" \
+    "https://ipv4.icanhazip.com" \
+    "https://ifconfig.me/ip"
+  do
+    ip="$(curl -4fsS --max-time 5 "$url" 2>/dev/null | tr -d '\r\n ' || true)"
+    if [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      echo "$ip"
+      return 0
+    fi
+  done
+  return 1
+}
+
+choose_remote_access() {
+  REMOTE_MODE="$(menu "Remote access" \
+    "Choose which addresses Nextcloud should trust:" \
+    local "Local network only" \
+    public "Detect and add public IPv4" \
+    custom "Add a custom domain or IP")"
+
+  PUBLIC_IP=""
+  CUSTOM_REMOTE_HOST=""
+
+  case "$REMOTE_MODE" in
+    local)
+      ;;
+    public)
+      PUBLIC_IP="$(detect_public_ipv4 || true)"
+      if [[ -z "$PUBLIC_IP" ]]; then
+        msg "Public IP" "The installer could not automatically detect a public IPv4 address.
+
+You can continue and add it later."
+        REMOTE_MODE="local"
+      else
+        if ! yesno "Public IP detected" \
+"Detected public IPv4:
+
+$PUBLIC_IP
+
+Add it to Nextcloud trusted_domains?
+
+This does NOT configure router port forwarding or HTTPS."; then
+          PUBLIC_IP=""
+          REMOTE_MODE="local"
+        fi
+      fi
+      ;;
+    custom)
+      CUSTOM_REMOTE_HOST="$(input "Custom host" \
+        "Enter a domain or IP, for example:
+
+cloud.example.com
+94.19.118.233" "")"
+      [[ -n "$CUSTOM_REMOTE_HOST" ]] || die "Custom host cannot be empty."
+      ;;
+  esac
 }
 
 main_menu() {

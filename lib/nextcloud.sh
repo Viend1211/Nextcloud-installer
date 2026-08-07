@@ -24,6 +24,7 @@ quick_install() {
   select_pve_storage
   select_data_disk
   choose_network
+  choose_remote_access
 
   if ! yesno "Ready to install" \
 "Quick install configuration:
@@ -36,6 +37,9 @@ System disk: $ROOTFS_GB GB on $SYSTEM_STORAGE
 Data disk: ${DATA_DISK:-inside LXC}
 Database: PostgreSQL
 Network: $NETCONF
+Remote access: ${REMOTE_MODE:-local}
+Public IP: ${PUBLIC_IP:-not added}
+Custom host: ${CUSTOM_REMOTE_HOST:-not added}
 
 Start installation?"; then
     exit 0
@@ -61,6 +65,7 @@ advanced_install() {
   select_data_disk
   choose_database
   choose_network
+  choose_remote_access
 
   if ! yesno "Ready to install" \
 "Advanced configuration:
@@ -74,6 +79,9 @@ System: $ROOTFS_GB GB on $SYSTEM_STORAGE
 Data: ${DATA_DISK:-inside LXC}
 Database: $DB_ENGINE
 Network: $NETCONF
+Remote access: ${REMOTE_MODE:-local}
+Public IP: ${PUBLIC_IP:-not added}
+Custom host: ${CUSTOM_REMOTE_HOST:-not added}
 Upload limit: $UPLOAD_LIMIT
 
 Start installation?"; then
@@ -190,6 +198,9 @@ ADMIN_PASS='$ADMIN_PASS'
 DATA_DIR='$data_dir'
 IP='$CONTAINER_IP'
 UPLOAD_LIMIT='$UPLOAD_LIMIT'
+PUBLIC_IP='${PUBLIC_IP:-}'
+CUSTOM_REMOTE_HOST='${CUSTOM_REMOTE_HOST:-}'
+REMOTE_MODE='${REMOTE_MODE:-local}'
 EOF
 
   pct push "$CTID" "/tmp/nc-env-$CTID" /root/nc-installer.env --perms 0600
@@ -354,6 +365,18 @@ NGINX
 
     occ config:system:set trusted_domains 0 --value=localhost
     occ config:system:set trusted_domains 1 --value="$IP"
+
+    TRUSTED_INDEX=2
+    if [[ -n "${PUBLIC_IP:-}" ]]; then
+      occ config:system:set trusted_domains "$TRUSTED_INDEX" --value="$PUBLIC_IP"
+      TRUSTED_INDEX=$((TRUSTED_INDEX + 1))
+    fi
+
+    if [[ -n "${CUSTOM_REMOTE_HOST:-}" ]]; then
+      occ config:system:set trusted_domains "$TRUSTED_INDEX" --value="$CUSTOM_REMOTE_HOST"
+    fi
+
+    # Keep CLI URL local until HTTPS/reverse proxy is explicitly configured.
     occ config:system:set overwrite.cli.url --value="http://$IP"
     occ config:system:set memcache.local --value='\''\OC\Memcache\APCu'\''
     occ config:system:set memcache.distributed --value='\''\OC\Memcache\Redis'\''
@@ -419,10 +442,18 @@ System disk:         $ROOTFS_GB GB
 Data disk:           ${DATA_DISK:-inside LXC}
 Data mount:          ${DATA_MOUNT:-inside LXC}
 
+Local URL:             http://$CONTAINER_IP
+Public IPv4:           ${PUBLIC_IP:-not added}
+Custom trusted host:   ${CUSTOM_REMOTE_HOST:-not added}
+
 IMPORTANT:
 Save these passwords now.
 For permanent use, reserve $CONTAINER_IP in DHCP or configure a static IP.
-Add HTTPS/reverse proxy before exposing Nextcloud to the Internet.
+If you use the public IPv4 with the current HTTP-only setup, forward
+TCP 80 on the router to the Nextcloud container only for testing.
+For permanent Internet access, configure HTTPS and use TCP 443.
+
+Add HTTPS/reverse proxy before exposing Nextcloud permanently to the Internet.
 ============================================================
 EOF
 }

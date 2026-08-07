@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT="Nextcloud Installer for Proxmox"
-VERSION="0.1.4"
+VERSION="0.1.5"
 REPO_RAW="https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main"
 WORKDIR="/tmp/nextcloud-installer"
 
