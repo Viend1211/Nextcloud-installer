@@ -87,52 +87,197 @@ perform_install() {
   ADMIN_PASS="$(randpass)"
   DB_PASS="$(randpass)"
 
-  create_lxc
-  install_nextcloud_inside_lxc
+  TOTAL_STEPS=10
+  STEP_NO=0
+  progress_header
+
+  step "Final safety checks"
+  log_text "System storage: $SYSTEM_STORAGE"
+  log_text "Data disk: ${DATA_DISK:-inside LXC}"
+  log_text "Network: $NETCONF"
+  pveversion | tee -a "$LOG_FILE"
+  pvesm status | tee -a "$LOG_FILE"
+
+  step "Preparing Proxmox storage and Debian template"
+  download_debian_template
+
+  step "Creating LXC container"
+  create_lxc_only
+
+  step "Starting LXC and waiting for network"
+  start_lxc_and_wait
+
+  step "Updating Debian inside LXC"
+  pct exec "$CTID" -- bash -lc \
+    'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get upgrade -y' \
+    2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+
+  step "Installing web server, PHP, Redis and database"
+  install_nextcloud_packages
+
+  step "Creating and configuring database"
+  configure_nextcloud_database
+
+  step "Downloading and unpacking Nextcloud"
+  download_and_unpack_nextcloud
+
+  step "Configuring Nginx, PHP and Nextcloud"
+  configure_nextcloud_application
+
+  step "Running final service checks"
+  final_service_checks
+
+  step "Installation completed"
   show_result
 }
 
-install_nextcloud_inside_lxc() {
-  local inner="/tmp/nc-inner-$CTID.sh"
+create_lxc_only() {
+  info "Creating LXC $CTID on $SYSTEM_STORAGE"
+
+  LXC_ROOT_PASS="$(randpass)"
+
+  pct create "$CTID" "$TEMPLATE_PATH" \
+    --hostname "$HOSTNAME" \
+    --rootfs "$SYSTEM_STORAGE:$ROOTFS_GB" \
+    --cores "$CORES" \
+    --memory "$MEMORY_MB" \
+    --swap "$SWAP_MB" \
+    --net0 "$NETCONF" \
+    --unprivileged 1 \
+    --onboot 1 \
+    --start 0 \
+    --password "$LXC_ROOT_PASS" \
+    --features keyctl=1,nesting=1 \
+    2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+
+  if [[ -n "${DATA_MOUNT:-}" ]]; then
+    pct set "$CTID" -mp0 "$DATA_MOUNT,mp=/mnt/data" \
+      2>&1 | tee -a "$LOG_FILE"
+    test ${PIPESTATUS[0]} -eq 0
+  fi
+}
+
+start_lxc_and_wait() {
+  pct start "$CTID" 2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+
+  CONTAINER_IP=""
+  for i in $(seq 1 75); do
+    printf '\rWaiting for IP... %d/75' "$i"
+    CONTAINER_IP="$(pct exec "$CTID" -- bash -lc "hostname -I 2>/dev/null | awk '{print \$1}'" 2>/dev/null || true)"
+    if [[ -n "$CONTAINER_IP" ]]; then
+      echo
+      log_text "Container IP: $CONTAINER_IP"
+      return 0
+    fi
+    sleep 2
+  done
+  echo
+  die "LXC started but did not get an IP address."
+}
+
+write_inner_env() {
   local data_dir="/var/www/nextcloud/data"
   [[ -n "${DATA_MOUNT:-}" ]] && data_dir="/mnt/data/data"
 
-  cat > "$inner" <<EOF
-#!/usr/bin/env bash
-set -Eeuo pipefail
-export DEBIAN_FRONTEND=noninteractive
+  cat > "/tmp/nc-env-$CTID" <<EOF
+DB_ENGINE='$DB_ENGINE'
+DB_PASS='$DB_PASS'
+ADMIN_USER='$ADMIN_USER'
+ADMIN_PASS='$ADMIN_PASS'
+DATA_DIR='$data_dir'
+IP='$CONTAINER_IP'
+UPLOAD_LIMIT='$UPLOAD_LIMIT'
+EOF
 
-DB_ENGINE="$DB_ENGINE"
-DB_PASS="$DB_PASS"
-ADMIN_USER="$ADMIN_USER"
-ADMIN_PASS="$ADMIN_PASS"
-DATA_DIR="$data_dir"
-IP="$CONTAINER_IP"
-UPLOAD_LIMIT="$UPLOAD_LIMIT"
+  pct push "$CTID" "/tmp/nc-env-$CTID" /root/nc-installer.env --perms 0600
+  rm -f "/tmp/nc-env-$CTID"
+}
 
-apt-get update
-apt-get upgrade -y
+install_nextcloud_packages() {
+  write_inner_env
 
-COMMON="nginx redis-server curl ca-certificates unzip cron imagemagick ffmpeg \
+  pct exec "$CTID" -- bash -lc '
+    set -Eeuo pipefail
+    source /root/nc-installer.env
+    export DEBIAN_FRONTEND=noninteractive
+
+    COMMON="nginx redis-server curl ca-certificates unzip cron imagemagick ffmpeg \
 php-fpm php-cli php-common php-gd php-curl php-mbstring php-intl php-gmp \
 php-bcmath php-xml php-zip php-apcu php-redis php-imagick"
 
-if [[ "\$DB_ENGINE" == "postgresql" ]]; then
-  apt-get install -y \$COMMON postgresql php-pgsql
-else
-  apt-get install -y \$COMMON mariadb-server php-mysql
-fi
+    if [[ "$DB_ENGINE" == "postgresql" ]]; then
+      apt-get install -y $COMMON postgresql php-pgsql
+      systemctl enable --now postgresql
+    else
+      apt-get install -y $COMMON mariadb-server php-mysql
+      systemctl enable --now mariadb
+    fi
 
-systemctl enable --now redis-server nginx cron
+    systemctl enable --now redis-server nginx cron
+  ' 2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+}
 
-PHPVER="\$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
-PHPINI="/etc/php/\${PHPVER}/fpm/php.ini"
-sed -i "s/^memory_limit = .*/memory_limit = 512M/" "\$PHPINI"
-sed -i "s/^upload_max_filesize = .*/upload_max_filesize = \$UPLOAD_LIMIT/" "\$PHPINI"
-sed -i "s/^post_max_size = .*/post_max_size = \$UPLOAD_LIMIT/" "\$PHPINI"
-sed -i "s/^max_execution_time = .*/max_execution_time = 3600/" "\$PHPINI"
+configure_nextcloud_database() {
+  pct exec "$CTID" -- bash -lc '
+    set -Eeuo pipefail
+    source /root/nc-installer.env
 
-cat > "/etc/php/\${PHPVER}/fpm/conf.d/99-nextcloud.ini" <<'PHP'
+    if [[ "$DB_ENGINE" == "postgresql" ]]; then
+      runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<SQL
+CREATE USER nextcloud WITH PASSWORD '"'"'$DB_PASS'"'"';
+CREATE DATABASE nextcloud OWNER nextcloud TEMPLATE template0 ENCODING '"'"'UTF8'"'"';
+SQL
+    else
+      mysql <<SQL
+CREATE DATABASE nextcloud CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+CREATE USER '"'"'nextcloud'"'"'@'"'"'localhost'"'"' IDENTIFIED BY '"'"'$DB_PASS'"'"';
+GRANT ALL PRIVILEGES ON nextcloud.* TO '"'"'nextcloud'"'"'@'"'"'localhost'"'"';
+FLUSH PRIVILEGES;
+SQL
+    fi
+  ' 2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+}
+
+download_and_unpack_nextcloud() {
+  pct exec "$CTID" -- bash -lc '
+    set -Eeuo pipefail
+    source /root/nc-installer.env
+
+    rm -f /tmp/nextcloud.zip
+    rm -rf /tmp/nextcloud
+    curl -fL --retry 5 --retry-delay 3 \
+      https://download.nextcloud.com/server/releases/latest.zip \
+      -o /tmp/nextcloud.zip
+
+    unzip -q /tmp/nextcloud.zip -d /tmp
+    rm -rf /var/www/nextcloud
+    mv /tmp/nextcloud /var/www/nextcloud
+
+    mkdir -p "$DATA_DIR"
+    chown -R www-data:www-data /var/www/nextcloud "$DATA_DIR"
+  ' 2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+}
+
+configure_nextcloud_application() {
+  pct exec "$CTID" -- bash -lc '
+    set -Eeuo pipefail
+    source /root/nc-installer.env
+
+    PHPVER="$(php -r '\''echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;'\'')"
+    PHPINI="/etc/php/${PHPVER}/fpm/php.ini"
+
+    sed -i "s/^memory_limit = .*/memory_limit = 512M/" "$PHPINI"
+    sed -i "s/^upload_max_filesize = .*/upload_max_filesize = $UPLOAD_LIMIT/" "$PHPINI"
+    sed -i "s/^post_max_size = .*/post_max_size = $UPLOAD_LIMIT/" "$PHPINI"
+    sed -i "s/^max_execution_time = .*/max_execution_time = 3600/" "$PHPINI"
+
+    cat > "/etc/php/${PHPVER}/fpm/conf.d/99-nextcloud.ini" <<PHP
 opcache.enable=1
 opcache.enable_cli=1
 opcache.interned_strings_buffer=16
@@ -141,43 +286,16 @@ opcache.memory_consumption=128
 opcache.save_comments=1
 PHP
 
-systemctl restart "php\${PHPVER}-fpm"
+    PHP_SOCK="/run/php/php${PHPVER}-fpm.sock"
 
-if [[ "\$DB_ENGINE" == "postgresql" ]]; then
-  systemctl enable --now postgresql
-  runuser -u postgres -- psql -v ON_ERROR_STOP=1 <<SQL
-CREATE USER nextcloud WITH PASSWORD '\$DB_PASS';
-CREATE DATABASE nextcloud OWNER nextcloud TEMPLATE template0 ENCODING 'UTF8';
-SQL
-  DB_TYPE="pgsql"
-else
-  systemctl enable --now mariadb
-  mysql <<SQL
-CREATE DATABASE nextcloud CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-CREATE USER 'nextcloud'@'localhost' IDENTIFIED BY '\$DB_PASS';
-GRANT ALL PRIVILEGES ON nextcloud.* TO 'nextcloud'@'localhost';
-FLUSH PRIVILEGES;
-SQL
-  DB_TYPE="mysql"
-fi
-
-curl -fL --retry 5 https://download.nextcloud.com/server/releases/latest.zip -o /tmp/nextcloud.zip
-unzip -q /tmp/nextcloud.zip -d /tmp
-rm -rf /var/www/nextcloud
-mv /tmp/nextcloud /var/www/nextcloud
-mkdir -p "\$DATA_DIR"
-chown -R www-data:www-data /var/www/nextcloud "\$DATA_DIR"
-
-PHP_SOCK="/run/php/php\${PHPVER}-fpm.sock"
-
-cat > /etc/nginx/sites-available/nextcloud <<NGINX
+    cat > /etc/nginx/sites-available/nextcloud <<NGINX
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
     root /var/www/nextcloud;
     index index.php index.html /index.php\$request_uri;
-    client_max_body_size \$UPLOAD_LIMIT;
+    client_max_body_size $UPLOAD_LIMIT;
 
     location = /robots.txt { allow all; log_not_found off; access_log off; }
 
@@ -191,16 +309,14 @@ server {
     location ~ ^/(?:\.|autotest|occ|issue|indie|db_|console) { return 404; }
 
     location ~ \.php(?:\$|/) {
-        rewrite ^/(?!index|remote|public|cron|core/ajax/update|status|ocs/v[12]|updater/.+|ocs-provider/.+) /index.php\$request_uri;
         fastcgi_split_path_info ^(.+?\.php)(/.*)\$;
-        set \$path_info \$fastcgi_path_info;
         try_files \$fastcgi_script_name =404;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        fastcgi_param PATH_INFO \$path_info;
+        fastcgi_param PATH_INFO \$fastcgi_path_info;
         fastcgi_param modHeadersAvailable true;
         fastcgi_param front_controller_active true;
-        fastcgi_pass unix:\$PHP_SOCK;
+        fastcgi_pass unix:$PHP_SOCK;
         fastcgi_intercept_errors on;
         fastcgi_request_buffering off;
     }
@@ -211,47 +327,71 @@ server {
 }
 NGINX
 
-rm -f /etc/nginx/sites-enabled/default
-ln -sfn /etc/nginx/sites-available/nextcloud /etc/nginx/sites-enabled/nextcloud
-nginx -t
-systemctl reload nginx
+    rm -f /etc/nginx/sites-enabled/default
+    ln -sfn /etc/nginx/sites-available/nextcloud /etc/nginx/sites-enabled/nextcloud
 
-cd /var/www/nextcloud
-occ(){ runuser -u www-data -- php occ "\$@"; }
+    nginx -t
+    systemctl restart "php${PHPVER}-fpm"
+    systemctl reload nginx
 
-occ maintenance:install \
-  --database="\$DB_TYPE" \
-  --database-name=nextcloud \
-  --database-user=nextcloud \
-  --database-pass="\$DB_PASS" \
-  --admin-user="\$ADMIN_USER" \
-  --admin-pass="\$ADMIN_PASS" \
-  --data-dir="\$DATA_DIR"
+    cd /var/www/nextcloud
+    occ(){ runuser -u www-data -- php occ "$@"; }
 
-occ config:system:set trusted_domains 0 --value=localhost
-occ config:system:set trusted_domains 1 --value="\$IP"
-occ config:system:set overwrite.cli.url --value="http://\$IP"
-occ config:system:set memcache.local --value='\OC\Memcache\APCu'
-occ config:system:set memcache.distributed --value='\OC\Memcache\Redis'
-occ config:system:set memcache.locking --value='\OC\Memcache\Redis'
-occ config:system:set redis host --value=127.0.0.1
-occ config:system:set redis port --type=integer --value=6379
-occ background:cron
-occ config:system:set maintenance_window_start --type=integer --value=1 || true
+    if [[ "$DB_ENGINE" == "postgresql" ]]; then
+      DB_TYPE="pgsql"
+    else
+      DB_TYPE="mysql"
+    fi
 
-cat > /etc/cron.d/nextcloud <<'CRON'
+    occ maintenance:install \
+      --database="$DB_TYPE" \
+      --database-name=nextcloud \
+      --database-user=nextcloud \
+      --database-pass="$DB_PASS" \
+      --admin-user="$ADMIN_USER" \
+      --admin-pass="$ADMIN_PASS" \
+      --data-dir="$DATA_DIR"
+
+    occ config:system:set trusted_domains 0 --value=localhost
+    occ config:system:set trusted_domains 1 --value="$IP"
+    occ config:system:set overwrite.cli.url --value="http://$IP"
+    occ config:system:set memcache.local --value='\''\OC\Memcache\APCu'\''
+    occ config:system:set memcache.distributed --value='\''\OC\Memcache\Redis'\''
+    occ config:system:set memcache.locking --value='\''\OC\Memcache\Redis'\''
+    occ config:system:set redis host --value=127.0.0.1
+    occ config:system:set redis port --type=integer --value=6379
+    occ background:cron
+    occ config:system:set maintenance_window_start --type=integer --value=1 || true
+
+    cat > /etc/cron.d/nextcloud <<CRON
 */5 * * * * www-data php -f /var/www/nextcloud/cron.php
 CRON
-chmod 644 /etc/cron.d/nextcloud
+    chmod 644 /etc/cron.d/nextcloud
 
-systemctl restart "php\${PHPVER}-fpm" nginx redis-server cron
-rm -f /tmp/nextcloud.zip
-EOF
+    systemctl restart "php${PHPVER}-fpm" nginx redis-server cron
+  ' 2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
+}
 
-  chmod +x "$inner"
-  pct push "$CTID" "$inner" /root/install-nextcloud-inner.sh --perms 0755
-  pct exec "$CTID" -- bash /root/install-nextcloud-inner.sh
-  rm -f "$inner"
+final_service_checks() {
+  pct exec "$CTID" -- bash -lc '
+    set -Eeuo pipefail
+    systemctl is-active --quiet nginx
+    systemctl is-active --quiet redis-server
+    systemctl is-active --quiet cron
+
+    if systemctl list-unit-files | grep -q "^postgresql.service"; then
+      systemctl is-active --quiet postgresql
+    fi
+
+    if systemctl list-unit-files | grep -q "^mariadb.service"; then
+      systemctl is-active --quiet mariadb
+    fi
+
+    cd /var/www/nextcloud
+    runuser -u www-data -- php occ status
+  ' 2>&1 | tee -a "$LOG_FILE"
+  test ${PIPESTATUS[0]} -eq 0
 }
 
 show_result() {

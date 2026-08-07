@@ -48,36 +48,6 @@ download_debian_template() {
 
 create_lxc() {
   download_debian_template
-
-  info "Creating LXC $CTID on $SYSTEM_STORAGE"
-
-  LXC_ROOT_PASS="$(randpass)"
-
-  pct create "$CTID" "$TEMPLATE_PATH" \
-    --hostname "$HOSTNAME" \
-    --rootfs "$SYSTEM_STORAGE:$ROOTFS_GB" \
-    --cores "$CORES" \
-    --memory "$MEMORY_MB" \
-    --swap "$SWAP_MB" \
-    --net0 "$NETCONF" \
-    --unprivileged 1 \
-    --onboot 1 \
-    --start 0 \
-    --password "$LXC_ROOT_PASS" \
-    --features keyctl=1,nesting=1
-
-  if [[ -n "${DATA_MOUNT:-}" ]]; then
-    pct set "$CTID" -mp0 "$DATA_MOUNT,mp=/mnt/data"
-  fi
-
-  pct start "$CTID"
-
-  info "Waiting for container network"
-  CONTAINER_IP=""
-  for _ in $(seq 1 75); do
-    sleep 2
-    CONTAINER_IP="$(pct exec "$CTID" -- bash -lc "hostname -I 2>/dev/null | awk '{print \$1}'" 2>/dev/null || true)"
-    [[ -n "$CONTAINER_IP" ]] && break
-  done
-  [[ -n "$CONTAINER_IP" ]] || die "LXC started but did not get an IP address."
+  create_lxc_only
+  start_lxc_and_wait
 }

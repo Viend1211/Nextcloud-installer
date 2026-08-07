@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT="Nextcloud Installer for Proxmox"
-VERSION="0.1.2"
+VERSION="0.1.3"
 REPO_RAW="https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main"
 WORKDIR="/tmp/nextcloud-installer"
 
@@ -46,6 +46,7 @@ source "$WORKDIR/lib/storage.sh"
 source "$WORKDIR/lib/lxc.sh"
 source "$WORKDIR/lib/nextcloud.sh"
 
+init_logging
 ensure_dialog
 fix_proxmox_repositories_if_needed
 main_menu
