@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.1.3"
+PROJECT_VERSION="0.1.4"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"
@@ -93,7 +93,7 @@ ensure_dialog() {
   if ! command -v whiptail >/dev/null 2>&1; then
     info "Installing dialog utilities"
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y whiptail curl ca-certificates
+    DEBIAN_FRONTEND=noninteractive apt-get install -y whiptail curl ca-certificates openssl
   fi
 }
 
@@ -120,7 +120,15 @@ menu() {
 }
 
 randpass() {
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 28
+  # Avoid `tr | head` here: with `set -o pipefail` the producer receives
+  # SIGPIPE when head exits, which becomes exit code 141 and aborts install.
+  # openssl outputs a fixed amount of random data without a truncating pipe.
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16
+  else
+    # 16 random bytes -> 32 hex chars, no pipeline/SIGPIPE involved.
+    od -An -N16 -tx1 /dev/urandom | sed 's/[[:space:]]//g'
+  fi
 }
 
 get_next_ctid() {
