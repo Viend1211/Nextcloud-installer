@@ -19,6 +19,7 @@ configure_defaults() {
 }
 
 quick_install() {
+  INSTALL_MODE="quick"
   configure_defaults
   select_pve_storage
   select_data_disk
@@ -44,6 +45,7 @@ Start installation?"; then
 }
 
 advanced_install() {
+  INSTALL_MODE="advanced"
   configure_defaults
 
   CTID="$(input "CT ID" "LXC container ID:" "$CTID")"

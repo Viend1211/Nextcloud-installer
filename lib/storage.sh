@@ -44,40 +44,86 @@ is_protected_disk() {
 }
 
 select_pve_storage() {
+  local storages=()
   local opts=()
-  local storage type status available percent
+  local storage line type available percent
 
-  # `pvesm status --content rootdir` already filters storages that support
-  # container root filesystems. Output columns are:
-  # Name Type Status Total Used Available %
-  while read -r storage type status available percent; do
-    [[ "$status" == "active" ]] || continue
-    opts+=("$storage" "$type | available ${available:-unknown} | ${percent:-N/A}")
-  done < <(
+  # Keep this intentionally simple. pvesm itself already filters by
+  # rootdir support, so the first field of every data row is a valid
+  # container storage candidate.
+  mapfile -t storages < <(
     pvesm status --content rootdir 2>/dev/null |
-      awk 'NR>1 {print $1,$2,$3,$6,$7}'
+      awk 'NR > 1 && NF > 0 {print $1}'
   )
+
+  # Fallback: parse storage.cfg if pvesm output parsing ever changes.
+  if [[ ${#storages[@]} -eq 0 && -r /etc/pve/storage.cfg ]]; then
+    mapfile -t storages < <(
+      awk '
+        /^[A-Za-z0-9_-]+:[[:space:]]+/ {
+          split($1,a,":"); current=a[2]
+        }
+        /^[[:space:]]+content[[:space:]]+/ && $0 ~ /(^|,)rootdir(,|$)/ {
+          if (current != "") print current
+        }
+      ' /etc/pve/storage.cfg
+    )
+  fi
+
+  # Last-resort known storage verification: ask pvesm directly.
+  if [[ ${#storages[@]} -eq 0 ]]; then
+    while read -r storage; do
+      [[ -n "$storage" ]] || continue
+      if pvesm status --storage "$storage" --content rootdir 2>/dev/null |
+           awk 'NR>1 && $3=="active" {found=1} END{exit !found}'; then
+        storages+=("$storage")
+      fi
+    done < <(awk '/^[A-Za-z0-9_-]+:[[:space:]]+/ {split($1,a,":"); print a[2]}' /etc/pve/storage.cfg 2>/dev/null)
+  fi
+
+  # De-duplicate.
+  if [[ ${#storages[@]} -gt 0 ]]; then
+    mapfile -t storages < <(printf '%s\n' "${storages[@]}" | sed '/^$/d' | sort -u)
+  fi
+
+  for storage in "${storages[@]}"; do
+    line="$(pvesm status --storage "$storage" 2>/dev/null | awk 'NR==2 {print; exit}')"
+    [[ -n "$line" ]] || continue
+    type="$(awk '{print $2}' <<<"$line")"
+    available="$(awk '{print $6}' <<<"$line")"
+    percent="$(awk '{print $7}' <<<"$line")"
+    opts+=("$storage" "${type:-unknown} | available ${available:-unknown} KiB | ${percent:-N/A}")
+  done
 
   if [[ ${#opts[@]} -eq 0 ]]; then
     echo >&2
-    echo "Current Proxmox storage status:" >&2
+    echo "===== PVE STORAGE STATUS =====" >&2
     pvesm status >&2 || true
     echo >&2
-    echo "Storage configuration:" >&2
+    echo "===== ROOTDIR STORAGE =====" >&2
+    pvesm status --content rootdir >&2 || true
+    echo >&2
+    echo "===== STORAGE.CFG =====" >&2
     cat /etc/pve/storage.cfg >&2 || true
-    die "No ACTIVE Proxmox storage supporting LXC rootdir was found."
+    die "No usable Proxmox storage for LXC rootdir was detected."
   fi
 
-  SYSTEM_STORAGE="$(menu "System storage" \
-    "Where should the Nextcloud LXC system disk be stored?" \
-    "${opts[@]}")"
+  # If there is exactly one candidate, select it automatically in Quick mode.
+  if [[ ${#storages[@]} -eq 1 && "${INSTALL_MODE:-}" == "quick" ]]; then
+    SYSTEM_STORAGE="${storages[0]}"
+    ok "Using LXC system storage: $SYSTEM_STORAGE"
+  else
+    SYSTEM_STORAGE="$(menu "System storage" \
+      "Where should the Nextcloud LXC system disk be stored?" \
+      "${opts[@]}")"
+  fi
 }
 
 select_data_disk() {
   detect_system_disks
 
   local opts=()
-  local name size model type mounts disk
+  local name size model type mounts disk label existing_part existing_mount
   while read -r name size type model; do
     [[ "$type" == "disk" ]] || continue
     disk="/dev/$name"
@@ -87,7 +133,11 @@ select_data_disk() {
     fi
 
     mounts="$(lsblk -nrpo MOUNTPOINT "$disk" | sed '/^$/d' | xargs || true)"
-    if [[ -n "$mounts" ]]; then
+    label="$(lsblk -nrpo LABEL "$disk" | sed '/^$/d' | head -n1 || true)"
+
+    if [[ "$label" == "NEXTCLOUD_DATA" || "$mounts" == *"/mnt/nextcloud-data"* ]]; then
+      opts+=("$disk" "$size | ${model:-Unknown} | EXISTING Nextcloud data disk")
+    elif [[ -n "$mounts" ]]; then
       opts+=("$disk" "$size | ${model:-Unknown} | mounted: $mounts")
     else
       opts+=("$disk" "$size | ${model:-Unknown} | available")
@@ -96,7 +146,9 @@ select_data_disk() {
 
   opts+=("none" "Store data inside LXC system disk")
 
-  DATA_DISK="$(menu "Nextcloud data" "Choose a disk for user files. Proxmox system disks are hidden." "${opts[@]}")"
+  DATA_DISK="$(menu "Nextcloud data" \
+    "Choose a disk for user files. Proxmox system disks are hidden." \
+    "${opts[@]}")"
 
   if [[ "$DATA_DISK" == "none" ]]; then
     DATA_MOUNT=""
@@ -104,6 +156,35 @@ select_data_disk() {
   fi
 
   DATA_MOUNT="/mnt/nextcloud-data"
+
+  # Detect an already prepared disk from a previous installer run.
+  existing_part="$(
+    lsblk -lnpo NAME,LABEL "$DATA_DISK" |
+      awk '$2=="NEXTCLOUD_DATA" {print $1; exit}'
+  )"
+  existing_mount="$(
+    lsblk -lnpo MOUNTPOINT "$DATA_DISK" |
+      awk '$1=="/mnt/nextcloud-data" {print $1; exit}'
+  )"
+
+  if [[ -n "$existing_part" || -n "$existing_mount" ]]; then
+    if yesno "Existing Nextcloud disk" \
+"An existing Nextcloud data filesystem was detected on:
+
+$DATA_DISK
+Partition: ${existing_part:-detected}
+Mount: /mnt/nextcloud-data
+
+Reuse it WITHOUT formatting?
+
+Choose Yes to keep the existing filesystem and files.
+Choose No to return to the main installation flow."; then
+      reuse_data_disk "$DATA_DISK" "$existing_part"
+      return
+    else
+      die "Existing data disk was not approved for reuse. No data was changed."
+    fi
+  fi
 
   local size model serial
   size="$(lsblk -dn -o SIZE "$DATA_DISK" | xargs)"
@@ -126,6 +207,26 @@ $DATA_DISK" "")"
   [[ "$confirm" == "$DATA_DISK" ]] || die "Disk confirmation did not match."
 
   prepare_data_disk
+}
+
+reuse_data_disk() {
+  local disk="$1"
+  local part="${2:-}"
+
+  if [[ -z "$part" ]]; then
+    part="$(findmnt -rn -S "$disk"* -o SOURCE 2>/dev/null | head -n1 || true)"
+  fi
+
+  if ! mountpoint -q "$DATA_MOUNT"; then
+    [[ -n "$part" && -b "$part" ]] || die "Could not identify the existing Nextcloud data partition."
+    mkdir -p "$DATA_MOUNT"
+    mount "$part" "$DATA_MOUNT"
+  fi
+
+  mkdir -p "$DATA_MOUNT/data"
+  chown -R 100033:100033 "$DATA_MOUNT"
+  chmod 750 "$DATA_MOUNT" "$DATA_MOUNT/data"
+  ok "Reusing existing data filesystem at $DATA_MOUNT. No formatting performed."
 }
 
 prepare_data_disk() {
