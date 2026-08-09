@@ -1,266 +1,91 @@
-# Nextcloud Installer for Proxmox VE
+# Nextcloud Installer & Manager for Proxmox VE
 
-## v0.1.5
+## v0.3.0
 
-Добавлено:
-- меню `Remote access` в Quick и Advanced режимах;
-- автоматическое определение публичного IPv4 через несколько сервисов;
-- подтверждение найденного внешнего IP;
-- автоматическое добавление публичного IPv4 в `trusted_domains`;
-- ручное добавление домена или IP;
-- локальный IP контейнера по-прежнему добавляется автоматически;
-- финальный отчёт показывает локальный URL, публичный IP и пользовательский trusted host.
+Теперь это не только установщик Nextcloud, но и мастер дальнейшего развития сервера.
 
-> Важно: `trusted_domains` не настраивает NAT, проброс портов или HTTPS. Текущая версия устанавливает Nextcloud по HTTP. Для теста извне можно пробросить TCP 80 на контейнер. Для постоянной работы рекомендуется HTTPS и TCP 443.
-
-
-
-## v0.1.4
-
-Исправлено:
-- критическая ошибка `Exit 141` при генерации случайных паролей;
-- функция `randpass()` больше не использует конструкцию `tr | head`, несовместимую с `set -o pipefail`;
-- генерация паролей теперь использует `openssl rand -hex 16` с безопасным fallback через `/dev/urandom`;
-- установка больше не должна завершаться на этапе `ADMIN_PASS="$(randpass)"`.
-
-
-
-## v0.1.3
-
-Добавлено:
-- живой вывод хода установки после подтверждения;
-- этапы вида `[03/10] Creating LXC container`;
-- полный лог `/var/log/nextcloud-installer.log`;
-- при ошибке показываются текущий этап, код возврата, команда и последние 40 строк лога;
-- монолитная установка Nextcloud разбита на отдельные диагностируемые этапы;
-- отдельная проверка сервисов Nginx, Redis, PostgreSQL/MariaDB и `occ status`;
-- ожидание IP контейнера отображается в реальном времени.
-
-
-
-## v0.1.2
-
-Исправлено:
-- полностью переписано определение LXC storage;
-- `pvesm status --content rootdir` теперь используется максимально просто, без хрупкого разбора статуса;
-- добавлены два резервных способа определения storage через `/etc/pve/storage.cfg` и прямую проверку `pvesm`;
-- если в Quick mode найден единственный подходящий storage, он выбирается автоматически;
-- существующий диск `NEXTCLOUD_DATA` теперь можно повторно использовать БЕЗ форматирования;
-- повторный запуск после частичной установки больше не должен уничтожать уже подготовленный data-диск.
-
-
-
-## v0.1.1
-
-Исправлено:
-- корректное определение активных Proxmox storage с поддержкой `rootdir`;
-- совместимость парсинга `pvesm status` с Proxmox VE 9;
-- автоматический выбор активного storage с поддержкой `vztmpl` для Debian LXC template;
-- при ошибке определения storage установщик теперь печатает `pvesm status` и `/etc/pve/storage.cfg` для диагностики.
-
-
-Интерактивный установщик **Nextcloud в LXC на Proxmox VE**.
-
-Проект рассчитан на сценарий, где сама система Nextcloud находится на хранилище Proxmox, а пользовательские файлы при необходимости размещаются на отдельном физическом HDD/SSD.
-
-> ⚠️ Проект находится на ранней стадии. Перед использованием на важных данных обязательно сделайте резервные копии.
-
-## Возможности
-
-- Quick Install для быстрой установки с разумными параметрами.
-- Advanced Install для ручного выбора CPU, RAM, swap, размера системного диска, сети и БД.
-- Автоматическое создание unprivileged LXC.
-- Автоматическая загрузка Debian LXC template.
-- Nextcloud + Nginx + PHP-FPM + Redis.
-- Выбор PostgreSQL или MariaDB.
-- Выбор Proxmox storage для системного диска LXC.
-- Выбор отдельного физического диска для файлов Nextcloud.
-- Форматирование отдельного data-диска в ext4 и автоматическое монтирование.
-- Защита обнаруженных системных дисков Proxmox от выбора в качестве data-диска.
-- Проверка APT-репозиториев.
-- Если Enterprise-репозиторий Proxmox возвращает `401 Unauthorized`, установщик может сделать резервную копию конфигурации, отключить Enterprise/Ceph Enterprise и подключить официальный `pve-no-subscription` для Proxmox VE 9 / Debian 13.
-- DHCP или статический IPv4.
-- Автоматически генерируемые пароли.
-
-## Быстрый запуск
-
-Запускайте команду **в Shell самого узла Proxmox**, не внутри VM или LXC:
-
-```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main/install.sh)"
-```
-
-В веб-интерфейсе Proxmox:
+Главное меню:
 
 ```text
-Datacenter
-└── pve
-    └── Shell
+Nextcloud for Proxmox
+├── Install a new Nextcloud
+├── Manage existing installation
+│   ├── Storage & disks
+│   │   ├── overview
+│   │   ├── upgrade advisor
+│   │   ├── add independent Nextcloud disk
+│   │   ├── replace current data disk with a larger disk, without RAID
+│   │   ├── migrate current data to two new disks RAID1
+│   │   ├── add a disk as Proxmox Directory Storage
+│   │   ├── expand LXC rootfs
+│   │   └── diagnostics
+│   ├── Nextcloud administration
+│   ├── LXC administration
+│   └── diagnostics
+└── Exit
 ```
 
-Вставьте команду выше и нажмите Enter.
+## Новый Upgrade Advisor
 
-## Quick Install
+Мастер анализирует текущую конфигурацию и предлагает возможные пути модернизации:
 
-В Quick-режиме используются значения по умолчанию:
+- один свободный диск → добавить как отдельное хранилище или заменить старый большим;
+- два свободных диска → предложить RAID1 / ZFS Mirror;
+- мало места в LXC → расширить `rootfs`;
+- обнаружен текущий `/mnt/nextcloud-data` → предложить безопасную миграцию;
+- ZFS уже используется → напомнить о scrub, SMART и snapshots;
+- независимо от RAID → напомнить о внешнем backup.
 
-| Параметр | Значение |
-|---|---|
-| Тип | unprivileged LXC |
-| ОС | Debian 13/12 template |
-| CPU | 2 cores |
-| RAM | 4096 MB |
-| Swap | 1024 MB |
-| System disk | 20 GB |
-| Database | PostgreSQL |
-| Cache / locking | Redis |
-| Web server | Nginx |
-| Network | выбирается пользователем |
-| Data filesystem | ext4 |
+## Замена текущего диска на больший без RAID
 
-Пользователь выбирает:
-
-1. Proxmox storage для системного диска контейнера.
-2. Отдельный физический диск для пользовательских файлов или хранение внутри LXC.
-3. DHCP или статический IP.
-4. Подтверждение установки.
-
-## Advanced Install
-
-Дополнительно можно выбрать:
-
-- CT ID;
-- hostname;
-- CPU;
-- RAM;
-- swap;
-- размер rootfs;
-- имя администратора Nextcloud;
-- максимальный размер загрузки;
-- PostgreSQL или MariaDB;
-- Proxmox storage;
-- отдельный data-диск;
-- bridge;
-- DHCP или статический IP/gateway.
-
-## Работа с дисками
-
-Установщик пытается определить физические диски, на которых расположен Proxmox, включая диски, используемые VG `pve`, и исключает их из списка доступных data-дисков.
-
-Перед очисткой выбранного data-диска показываются:
-
-- `/dev/...`;
-- размер;
-- модель;
-- serial number.
-
-Для подтверждения необходимо вручную ввести точное имя устройства, например:
+Сценарий:
 
 ```text
-/dev/sda
+старый HDD
+   │
+   ├── online rsync
+   │
+   ▼
+новый большой HDD
+   │
+   ├── maintenance mode
+   ├── final rsync
+   └── switch bind mount
 ```
 
-После подтверждения выбранный диск **полностью очищается** и создаётся один раздел ext4 с меткой:
+Старый диск автоматически не стирается.
+
+## Переход на RAID1
 
 ```text
-NEXTCLOUD_DATA
+старый HDD
+   │
+   ▼
+new HDD 1 ─┐
+           ├── ZFS Mirror / mdadm RAID1
+new HDD 2 ─┘
+   │
+   ▼
+Nextcloud bind mount
 ```
 
-На Proxmox он монтируется в:
+## Добавление диска без миграции
+
+Можно создать новый ext4-диск, смонтировать его на Proxmox и передать в LXC как `/mnt/dataN`. Затем использовать его в Nextcloud через External Storage.
+
+## Добавление диска для самого Proxmox
+
+Мастер может подготовить отдельный ext4-диск и зарегистрировать его как Directory Storage для:
 
 ```text
-/mnt/nextcloud-data
+VM images
+LXC rootdir
+backups
+ISO
+templates
 ```
 
-В LXC:
-
-```text
-/mnt/data
-```
-
-Nextcloud использует:
-
-```text
-/mnt/data/data
-```
-
-## Proxmox repositories
-
-Proxmox VE Enterprise repository требует действующей подписки. Если Enterprise repository включён без подписки, `apt update` может возвращать:
-
-```text
-401 Unauthorized
-```
-
-Для Proxmox VE 9 официальный no-subscription repository имеет вид:
-
-```text
-Types: deb
-URIs: http://download.proxmox.com/debian/pve
-Suites: trixie
-Components: pve-no-subscription
-Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg
-```
-
-Документация Proxmox:
-
-https://pve.proxmox.com/pve-docs/pve-admin-guide.html
-
-> Proxmox отмечает, что `pve-no-subscription` предназначен прежде всего для тестирования и не проходит тот же уровень проверки, что Enterprise repository.
-
-Перед изменением APT-конфигурации установщик сохраняет резервную копию в:
-
-```text
-/root/nextcloud-installer-backups/
-```
-
-## После установки
-
-Установщик выводит:
-
-```text
-URL
-LXC ID
-Nextcloud admin/password
-LXC root password
-Database/password
-System storage
-Data disk
-```
-
-Сохраните эти данные сразу после установки.
-
-Для постоянной эксплуатации рекомендуется:
-
-- закрепить IP контейнера в DHCP или использовать статический IP;
-- настроить DNS;
-- настроить HTTPS;
-- не публиковать HTTP-порт Nextcloud напрямую в интернет;
-- настроить резервное копирование Nextcloud, БД и data-диска;
-- регулярно обновлять Proxmox и Nextcloud.
-
-## Структура проекта
-
-```text
-Nextcloud-installer/
-├── install.sh
-├── README.md
-├── LICENSE
-├── lib/
-│   ├── common.sh
-│   ├── repos.sh
-│   ├── storage.sh
-│   ├── lxc.sh
-│   └── nextcloud.sh
-└── templates/
-    └── nginx.conf
-```
-
-`install.sh` является небольшим bootstrap-файлом. Он загружает актуальные модули из ветки `main`, после чего запускает интерактивный установщик.
-
-## Обновление
-
-Чтобы получить новую версию установщика, достаточно снова выполнить ту же команду:
+## Запуск
 
 ```bash
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main/install.sh)"
@@ -268,22 +93,6 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Viend1211/Nextcloud-inst
 
 ## Безопасность
 
-Никогда не запускайте скрипт форматирования дисков, если не понимаете, какой диск выбран.
+Перед форматированием мастер показывает устройство, размер, модель и serial. Системные диски Proxmox исключаются из выбора насколько это возможно. Тем не менее перед подтверждением всегда сверяйте MODEL и SERIAL.
 
-Перед использованием проверьте:
-
-```bash
-lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS,MODEL,SERIAL
-```
-
-Если на выбранном диске есть важные данные, остановите установку.
-
-Также рекомендуется просмотреть содержимое скрипта перед запуском:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main/install.sh
-```
-
-## License
-
-MIT
+RAID не является резервной копией.
