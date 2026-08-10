@@ -22,6 +22,8 @@ grep VERSION /tmp/nextcloud-install.sh && \
 bash /tmp/nextcloud-install.sh
 
 
+### 
+
 Мастер проверяет:
 
 1. Контейнер Nextcloud запущен.
