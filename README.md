@@ -10,6 +10,17 @@
 Управление дисками
 └── Безопасно отключить старый диск после миграции
 ```
+## Быстрый запуск
+
+Запускать на самом хосте Proxmox от `root`:
+
+```bash
+rm -rf /tmp/nextcloud-installer /tmp/nextcloud-install.sh && \
+curl -fsSL "https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main/install.sh?nocache=$(date +%s)" \
+-o /tmp/nextcloud-install.sh && \
+grep VERSION /tmp/nextcloud-install.sh && \
+bash /tmp/nextcloud-install.sh
+
 
 Мастер проверяет:
 
