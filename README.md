@@ -22,7 +22,7 @@ grep VERSION /tmp/nextcloud-install.sh && \
 bash /tmp/nextcloud-install.sh
 
 
-### 
+### Новый пункт
 
 Мастер проверяет:
 
