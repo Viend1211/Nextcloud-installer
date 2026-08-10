@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 LOG="/var/log/proxmox-storage-migrator.log"
 BACKUP_DIR="/root/proxmox-storage-migrator-backups"
 
@@ -305,14 +305,14 @@ prepare_single_ext4(){
 replace_single_disk(){
   select_ct
   select_source_mount
-  select_free_disk "New replacement disk"
+  select_free_disk "Выберите новый диск для замены"
 
   local new_disk="$SELECTED_DISK"
   local target="/mnt/nextcloud-new"
 
   install_tools
 
-  if ! yesno "Replace data disk" \
+  if ! yesno "Замена диска Nextcloud" \
 "Source:
 $SOURCE_HOST -> $SOURCE_CONTAINER
 
@@ -406,19 +406,19 @@ create_mdadm_mirror_target(){
 migrate_to_raid1(){
   select_ct
   select_source_mount
-  select_free_disk "RAID1 disk 1"
+  select_free_disk "Первый диск RAID1"
   local d1="$SELECTED_DISK"
-  select_free_disk "RAID1 disk 2" "$d1"
+  select_free_disk "Второй диск RAID1" "$d1"
   local d2="$SELECTED_DISK"
 
   local method
-  method="$(menu "RAID1 type" "Choose RAID1 implementation:" \
-    zfs "ZFS Mirror (recommended for Proxmox)" \
+  method="$(menu "Тип RAID1" "Choose RAID1 implementation:" \
+    zfs "ZFS Mirror (рекомендуется для Proxmox)" \
     mdadm "Linux mdadm RAID1 + ext4")"
 
   install_tools
 
-  if ! yesno "Migration plan" \
+  if ! yesno "План переноса" \
 "Existing data:
 $SOURCE_HOST -> $SOURCE_CONTAINER
 
@@ -480,11 +480,11 @@ mdadm --detail /dev/md0"
 
 add_independent_disk(){
   select_ct
-  select_free_disk "New independent disk"
+  select_free_disk "Новый отдельный диск"
   local d="$SELECTED_DISK"
 
   local mpnum
-  mpnum="$(input "Bind mount number" "Enter mount slot number (for example 1 for mp1):" "1")"
+  mpnum="$(input "Номер подключения диска" "Enter mount slot number (for example 1 for mp1):" "1")"
   local host="/mnt/nextcloud-data${mpnum}"
   local container="/mnt/data${mpnum}"
 
@@ -737,19 +737,19 @@ storage_advisor() {
 disk_management_menu() {
   while true; do
     local action
-    action="$(menu "Disk management" \
+    action="$(menu "Управление дисками" \
 "Choose a disk/storage operation.
 
 Destructive actions always require separate confirmation." \
-      overview "Show disks, mounts, Proxmox storage and RAID" \
-      advisor "Show upgrade / modernization recommendations" \
-      addnc "Add independent disk to Nextcloud LXC" \
-      replace "Replace current Nextcloud data disk with larger disk (no RAID)" \
-      raid1 "Migrate current Nextcloud data to 2 new disks RAID1" \
-      addpve "Add a new disk as Proxmox Directory Storage" \
-      rootfs "Expand an LXC system disk (rootfs)" \
-      diag "Detailed diagnostics" \
-      back "Back")" || return 0
+      overview "Показать диски, подключения, хранилища и RAID" \
+      advisor "Показать варианты модернизации" \
+      addnc "Добавить отдельный диск в Nextcloud" \
+      replace "Заменить текущий диск на больший без RAID" \
+      raid1 "Перенести Nextcloud на два новых диска RAID1" \
+      addpve "Добавить диск как хранилище Proxmox" \
+      rootfs "Увеличить системный диск LXC" \
+      diag "Подробная диагностика" \
+      back "Назад")" || return 0
 
     case "$action" in
       overview) storage_overview ;;
@@ -771,12 +771,12 @@ main(){
 
   while true; do
     local action
-    action="$(menu "Proxmox Storage Manager v$VERSION" \
-"Disk management and migration wizard for an existing Proxmox/Nextcloud system." \
-      disks "Disk management / migration / upgrades" \
-      advisor "Upgrade advisor" \
-      diag "Diagnostics" \
-      exit "Exit")" || exit 0
+    action="$(menu "Управление дисками Proxmox v$VERSION" \
+"Мастер управления дисками и переноса данных." \
+      disks "Управление дисками и перенос данных" \
+      advisor "Советник по модернизации" \
+      diag "Диагностика" \
+      exit "Выход")" || exit 0
 
     case "$action" in
       disks) disk_management_menu ;;

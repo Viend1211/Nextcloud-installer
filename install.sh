@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT="Nextcloud Installer for Proxmox"
-VERSION="0.3.0"
+VERSION="0.4.0"
 REPO_RAW="https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main"
 WORKDIR="/tmp/nextcloud-installer"
 
@@ -57,12 +57,12 @@ fix_proxmox_repositories_if_needed
 existing_installation_menu() {
   while true; do
     local action
-    action="$(menu "Existing installation" "Manage an existing Nextcloud/LXC:" \
-      storage "Storage & disks: add, replace, RAID1, expand, upgrade advisor" \
-      nextcloud "Nextcloud administration" \
-      container "LXC administration" \
-      diagnostics "Diagnostics" \
-      back "Back")" || return 0
+    action="$(menu "Существующая установка" "Управление уже установленным Nextcloud и LXC:" \
+      storage "Диски: добавить, заменить, RAID1, расширить" \
+      nextcloud "Настройки Nextcloud" \
+      container "Управление контейнером LXC" \
+      diagnostics "Диагностика" \
+      back "Назад")" || return 0
 
     case "$action" in
       storage) bash "$WORKDIR/maintenance/storage-migrator.sh" ;;
@@ -75,11 +75,11 @@ existing_installation_menu() {
 }
 
 while true; do
-  action="$(menu "Nextcloud for Proxmox v$VERSION" "Choose mode:" \
-    install "Install a new Nextcloud" \
-    manage "Manage existing installation" \
-    diagnostics "Proxmox / storage diagnostics" \
-    exit "Exit")" || exit 0
+  action="$(menu "Nextcloud для Proxmox v$VERSION" "Выберите режим работы:" \
+    install "Установить новый Nextcloud" \
+    manage "Настроить существующую установку" \
+    diagnostics "Диагностика Proxmox и хранилищ" \
+    exit "Выход")" || exit 0
 
   case "$action" in
     install) main_menu; exit 0 ;;

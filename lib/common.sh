@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.3.0"
+PROJECT_VERSION="0.4.0"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"
@@ -164,11 +164,11 @@ detect_public_ipv4() {
 }
 
 choose_remote_access() {
-  REMOTE_MODE="$(menu "Remote access" \
-    "Choose which addresses Nextcloud should trust:" \
-    local "Local network only" \
-    public "Detect and add public IPv4" \
-    custom "Add a custom domain or IP")"
+  REMOTE_MODE="$(menu "Удалённый доступ" \
+    "Выберите вариант внешнего доступа:" \
+    local "Только локальная сеть" \
+    public "Автоматически определить внешний IPv4" \
+    custom "Добавить домен или IP вручную")"
 
   PUBLIC_IP=""
   CUSTOM_REMOTE_HOST=""
@@ -184,7 +184,7 @@ choose_remote_access() {
 You can continue and add it later."
         REMOTE_MODE="local"
       else
-        if ! yesno "Public IP detected" \
+        if ! yesno "Обнаружен внешний IP" \
 "Detected public IPv4:
 
 $PUBLIC_IP
@@ -198,7 +198,7 @@ This does NOT configure router port forwarding or HTTPS."; then
       fi
       ;;
     custom)
-      CUSTOM_REMOTE_HOST="$(input "Custom host" \
+      CUSTOM_REMOTE_HOST="$(input "Домен или IP" \
         "Enter a domain or IP, for example:
 
 cloud.example.com
