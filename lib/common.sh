@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.4.2"
+PROJECT_VERSION="0.4.3"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"
@@ -297,7 +297,9 @@ ui_progress_bar() {
   (( total <= 0 )) && total=100
   local percent=$((current * 100 / total))
   (( percent > 100 )) && percent=100
-  local width=32 filled=$((percent * width / 100)) empty=$((width-filled))
+  local width=32
+  local filled=$((percent * width / 100))
+  local empty=$((width - filled))
   local bar=""
   local i
   for ((i=0;i<filled;i++)); do bar+="█"; done

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.2"
+VERSION="0.4.3"
 LOG="/var/log/proxmox-storage-migrator.log"
 BACKUP_DIR="/root/proxmox-storage-migrator-backups"
 
@@ -20,6 +20,8 @@ die(){ echo -e "${RED}ERROR:${NC} $*" >&2; echo "[$(date -Is)] ERROR: $*" >> "$L
 
 on_error(){
   local rc=$?
+  local line="${BASH_LINENO[0]:-неизвестно}"
+  local cmd="${BASH_COMMAND:-неизвестно}"
   set +e
   [[ -n "${SPIN_PID:-}" ]] && kill "$SPIN_PID" 2>/dev/null || true
   echo
@@ -29,6 +31,8 @@ on_error(){
   echo
   echo "  Этап:        ${CURRENT_STEP:-Не определён}"
   echo "  Код ошибки: $rc"
+  echo "  Строка:      $line"
+  echo "  Команда:     $cmd"
   echo "  Лог:         $LOG"
   echo
   echo "  Последние 50 строк:"
@@ -36,8 +40,7 @@ on_error(){
   tail -n 50 "$LOG" 2>/dev/null || true
   echo "------------------------------------------------------------"
   echo
-  echo "  Исходный диск специально не стирается мастером миграции."
-  echo "  Перед повторным запуском проверьте состояние новых дисков."
+  echo "  Исходный диск мастер автоматически не стирает."
   echo
   exit "$rc"
 }
@@ -122,7 +125,9 @@ stage() {
   CURRENT_STEP="$text"
   logo_frame "$n"
   local pct=$((n*100/total))
-  local width=30 filled=$((pct*width/100)) empty=$((width-filled))
+  local width=30
+  local filled=$((pct * width / 100))
+  local empty=$((width - filled))
   local bar="" i
   for ((i=0;i<filled;i++)); do bar+="█"; done
   for ((i=0;i<empty;i++)); do bar+="░"; done

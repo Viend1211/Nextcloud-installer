@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT="Nextcloud Installer for Proxmox"
-VERSION="0.4.2"
+VERSION="0.4.3"
 REPO_RAW="https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main"
 WORKDIR="/tmp/nextcloud-installer"
 
@@ -77,7 +77,7 @@ existing_installation_menu() {
       back "Назад")" || return 0
 
     case "$action" in
-      storage) bash "$WORKDIR/maintenance/storage-migrator.sh" ;;
+      storage) STORAGE_MIGRATOR_PARENT=1 bash "$WORKDIR/maintenance/storage-migrator.sh" ;;
       nextcloud) admin_nextcloud_occ ;;
       container) admin_container_tools ;;
       diagnostics) admin_diagnostics ;;
