@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.4.0"
+PROJECT_VERSION="0.4.1"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"
@@ -220,4 +220,107 @@ main_menu() {
     advanced) advanced_install ;;
     *) exit 0 ;;
   esac
+}
+
+
+# ============================================================
+# Визуальный интерфейс v0.4.1
+# ============================================================
+UI_SPINNER_PID=""
+UI_START_TS=0
+
+ui_logo_frame() {
+  local frame="${1:-0}"
+  local glyphs=("◐" "◓" "◑" "◒")
+  local g="${glyphs[$((frame % 4))]}"
+  printf '%s\n' \
+"╔══════════════════════════════════════════════════════════╗" \
+"║                                                          ║" \
+"║                 N E X T C L O U D                        ║" \
+"║                       ${g}                                  ║" \
+"║              Менеджер для Proxmox VE                    ║" \
+"║                       v${PROJECT_VERSION}                         ║" \
+"╚══════════════════════════════════════════════════════════╝"
+}
+
+ui_header() {
+  local title="${1:-Выполнение операции}"
+  clear 2>/dev/null || true
+  ui_logo_frame 0
+  echo
+  echo "  $title"
+  echo "  Лог: ${LOG_FILE:-/var/log/nextcloud-installer.log}"
+  echo
+}
+
+ui_spinner_start() {
+  local text="$1"
+  UI_START_TS="$(date +%s)"
+  (
+    local i=0 now elapsed mm ss
+    local glyphs=("◐" "◓" "◑" "◒")
+    while true; do
+      now="$(date +%s)"
+      elapsed=$((now - UI_START_TS))
+      mm=$((elapsed / 60))
+      ss=$((elapsed % 60))
+      printf '\r  %s  %s   [%02d:%02d]   ' "${glyphs[$((i % 4))]}" "$text" "$mm" "$ss"
+      i=$((i+1))
+      sleep 0.15
+    done
+  ) &
+  UI_SPINNER_PID=$!
+  disown "$UI_SPINNER_PID" 2>/dev/null || true
+}
+
+ui_spinner_stop() {
+  local result="${1:-Готово}"
+  if [[ -n "${UI_SPINNER_PID:-}" ]]; then
+    kill "$UI_SPINNER_PID" 2>/dev/null || true
+    wait "$UI_SPINNER_PID" 2>/dev/null || true
+    UI_SPINNER_PID=""
+  fi
+  printf '\r  ✓  %-70s\n' "$result"
+}
+
+ui_progress_bar() {
+  local current="${1:-0}" total="${2:-100}" label="${3:-Прогресс}"
+  (( total <= 0 )) && total=100
+  local percent=$((current * 100 / total))
+  (( percent > 100 )) && percent=100
+  local width=32 filled=$((percent * width / 100)) empty=$((width-filled))
+  local bar=""
+  local i
+  for ((i=0;i<filled;i++)); do bar+="█"; done
+  for ((i=0;i<empty;i++)); do bar+="░"; done
+  printf '\r  %-18s %s %3d%%' "$label" "$bar" "$percent"
+}
+
+ui_step_screen() {
+  local title="$1" current="$2" total="$3"
+  ui_header "$title"
+  ui_progress_bar "$current" "$total" "Общий прогресс"
+  echo
+  echo
+}
+
+run_with_spinner() {
+  local text="$1"; shift
+  ui_spinner_start "$text"
+  set +e
+  "$@" >>"${LOG_FILE:-/var/log/nextcloud-installer.log}" 2>&1
+  local rc=$?
+  set -e
+  if [[ $rc -eq 0 ]]; then
+    ui_spinner_stop "$text"
+    return 0
+  fi
+  ui_spinner_stop "Ошибка: $text"
+  return "$rc"
+}
+
+confirm_destructive_disks() {
+  local title="$1" body="$2"
+  whiptail --title "$title" --yes-button "ПРОДОЛЖИТЬ" --no-button "НАЗАД" \
+    --yesno "$body" 22 88
 }

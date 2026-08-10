@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PROJECT="Nextcloud Installer for Proxmox"
-VERSION="0.4.0"
+VERSION="0.4.1"
 REPO_RAW="https://raw.githubusercontent.com/Viend1211/Nextcloud-installer/main"
 WORKDIR="/tmp/nextcloud-installer"
 
@@ -53,6 +53,19 @@ source "$WORKDIR/lib/admin.sh"
 init_logging
 ensure_dialog
 fix_proxmox_repositories_if_needed
+animated_splash
+
+
+animated_splash() {
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    clear 2>/dev/null || true
+    ui_logo_frame "$i"
+    echo
+    echo "               Подготовка интерфейса..."
+    sleep 0.08
+  done
+}
 
 existing_installation_menu() {
   while true; do

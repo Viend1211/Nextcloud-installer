@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.1"
 LOG="/var/log/proxmox-storage-migrator.log"
 BACKUP_DIR="/root/proxmox-storage-migrator-backups"
 
@@ -21,18 +21,24 @@ die(){ echo -e "${RED}ERROR:${NC} $*" >&2; echo "[$(date -Is)] ERROR: $*" >> "$L
 on_error(){
   local rc=$?
   set +e
+  [[ -n "${SPIN_PID:-}" ]] && kill "$SPIN_PID" 2>/dev/null || true
   echo
-  echo "============================================================"
-  echo " STORAGE MIGRATION FAILED"
-  echo "============================================================"
-  echo "Step: $CURRENT_STEP"
-  echo "Exit: $rc"
-  echo "Log:  $LOG"
+  echo "╔══════════════════════════════════════════════════════════╗"
+  echo "║                    ОШИБКА ОПЕРАЦИИ                      ║"
+  echo "╚══════════════════════════════════════════════════════════╝"
   echo
-  echo "Last 50 log lines:"
+  echo "  Этап:        ${CURRENT_STEP:-Не определён}"
+  echo "  Код ошибки: $rc"
+  echo "  Лог:         $LOG"
+  echo
+  echo "  Последние 50 строк:"
+  echo "------------------------------------------------------------"
   tail -n 50 "$LOG" 2>/dev/null || true
+  echo "------------------------------------------------------------"
   echo
-  echo "The source disk was not intentionally erased by this wizard."
+  echo "  Исходный диск специально не стирается мастером миграции."
+  echo "  Перед повторным запуском проверьте состояние новых дисков."
+  echo
   exit "$rc"
 }
 trap on_error ERR
@@ -62,6 +68,114 @@ yesno(){
 }
 msg(){
   whiptail --title "$1" --msgbox "$2" 18 86
+}
+
+
+# ============================================================
+# Визуальный интерфейс мигратора v0.4.1
+# ============================================================
+MIG_START_TS=0
+SPIN_PID=""
+
+logo_frame() {
+  local frame="${1:-0}"
+  local glyphs=("◐" "◓" "◑" "◒")
+  local g="${glyphs[$((frame % 4))]}"
+  clear 2>/dev/null || true
+  printf '%s\n' \
+"╔══════════════════════════════════════════════════════════╗" \
+"║                 N E X T C L O U D                        ║" \
+"║                       ${g}                                  ║" \
+"║            Хранилище • Proxmox • v${VERSION}               ║" \
+"╚══════════════════════════════════════════════════════════╝"
+}
+
+spinner_start() {
+  local text="$1"
+  MIG_START_TS="$(date +%s)"
+  (
+    local i=0 now elapsed mm ss
+    local glyphs=("◐" "◓" "◑" "◒")
+    while true; do
+      now="$(date +%s)"
+      elapsed=$((now-MIG_START_TS))
+      mm=$((elapsed/60)); ss=$((elapsed%60))
+      printf '\r  %s  %s  [%02d:%02d]   ' "${glyphs[$((i%4))]}" "$text" "$mm" "$ss"
+      i=$((i+1))
+      sleep 0.15
+    done
+  ) &
+  SPIN_PID=$!
+  disown "$SPIN_PID" 2>/dev/null || true
+}
+
+spinner_stop() {
+  local text="${1:-Готово}"
+  [[ -n "${SPIN_PID:-}" ]] && kill "$SPIN_PID" 2>/dev/null || true
+  [[ -n "${SPIN_PID:-}" ]] && wait "$SPIN_PID" 2>/dev/null || true
+  SPIN_PID=""
+  printf '\r  ✓  %-70s\n' "$text"
+}
+
+stage() {
+  local n="$1" total="$2" text="$3"
+  CURRENT_STEP="$text"
+  logo_frame "$n"
+  local pct=$((n*100/total))
+  local width=30 filled=$((pct*width/100)) empty=$((width-filled))
+  local bar="" i
+  for ((i=0;i<filled;i++)); do bar+="█"; done
+  for ((i=0;i<empty;i++)); do bar+="░"; done
+  echo
+  echo "  [$n/$total] $text"
+  echo
+  printf '  %s  %3d%%\n\n' "$bar" "$pct"
+  echo "  Полный лог: $LOG"
+  echo
+}
+
+safe_run() {
+  local text="$1"; shift
+  spinner_start "$text"
+  set +e
+  "$@" >>"$LOG" 2>&1
+  local rc=$?
+  set -e
+  if [[ $rc -eq 0 ]]; then
+    spinner_stop "$text"
+    return 0
+  fi
+  spinner_stop "Ошибка: $text"
+  return "$rc"
+}
+
+confirm_raid1_gui() {
+  local d1="$1" d2="$2" s1 s2
+  s1="$(disk_summary "$d1")"
+  s2="$(disk_summary "$d2")"
+  whiptail --title "Создание RAID1" \
+    --yes-button "СОЗДАТЬ RAID1" --no-button "НАЗАД" \
+    --yesno "БУДУТ ПОЛНОСТЬЮ ОЧИЩЕНЫ ДВА НОВЫХ ДИСКА:
+
+1) $s1
+
+2) $s2
+
+Исходный диск Nextcloud НЕ будет очищен.
+
+После создания массива начнётся перенос данных.
+
+Продолжить?" 24 90
+}
+
+animated_logo_once() {
+  local i
+  for i in 0 1 2 3 4 5 6 7; do
+    logo_frame "$i"
+    echo
+    echo "                Подготовка мастера дисков..."
+    sleep 0.08
+  done
 }
 
 detect_system_disks(){
@@ -208,23 +322,9 @@ $d" "")"
   [[ "$typed" == "$d" ]] || die "Disk confirmation did not match."
 }
 
-confirm_two_disks(){
+confirm_two_disks() {
   local d1="$1" d2="$2"
-  local s1 s2 typed
-  s1="$(disk_summary "$d1")"
-  s2="$(disk_summary "$d2")"
-
-  msg "RAID1 DANGER" "These TWO disks will be ERASED:
-
-1) $s1
-2) $s2
-
-The existing source disk is NOT in this list and will be kept."
-
-  typed="$(input "Confirm RAID1 creation" "Type exactly:
-
-CREATE RAID1" "")"
-  [[ "$typed" == "CREATE RAID1" ]] || die "RAID1 confirmation failed."
+  confirm_raid1_gui "$d1" "$d2" || die "Создание RAID1 отменено пользователем."
 }
 
 install_tools(){
@@ -249,12 +349,18 @@ nextcloud_maintenance_off(){
 
 rsync_data(){
   local src="$1" dst="$2"
-  CURRENT_STEP="Copying data"
-  info "First rsync: $src -> $dst"
-  rsync -aHAX --numeric-ids --info=progress2 "$src"/ "$dst"/
-
-  info "Verification rsync (second pass)"
-  rsync -aHAX --numeric-ids --delete --info=stats2 "$src"/ "$dst"/
+  CURRENT_STEP="Финальная синхронизация данных"
+  logo_frame 2
+  echo
+  echo "  Копирование данных Nextcloud"
+  echo "  Источник: $src"
+  echo "  Назначение: $dst"
+  echo
+  echo "  Ниже отображается реальный прогресс rsync:"
+  echo
+  rsync -aHAX --numeric-ids --delete --info=progress2,stats2 "$src"/ "$dst"/ 2>&1 | tee -a "$LOG"
+  local rc=${PIPESTATUS[0]}
+  [[ $rc -eq 0 ]] || return "$rc"
 }
 
 backup_ct_config(){
@@ -332,15 +438,22 @@ Continue?"; then
     exit 0
   fi
 
+  stage 1 6 "Подготовка нового диска"
   prepare_single_ext4 "$new_disk" "$target" "NEXTCLOUD_NEW"
 
-  # Warm copy while server is online.
-  rsync -aHAX --numeric-ids --info=progress2 "$SOURCE_HOST"/ "$target"/
+  stage 2 6 "Первичное копирование данных"
+  rsync -aHAX --numeric-ids --info=progress2 "$SOURCE_HOST"/ "$target"/ 2>&1 | tee -a "$LOG"
+  test ${PIPESTATUS[0]} -eq 0
 
+  stage 3 6 "Режим обслуживания Nextcloud"
   nextcloud_maintenance_on
+  stage 4 6 "Финальная синхронизация"
   rsync_data "$SOURCE_HOST" "$target"
+  stage 5 6 "Переключение на новый диск"
   switch_bind_mount "$target"
   nextcloud_maintenance_off
+  stage 6 6 "Проверка Nextcloud"
+  pct exec "$CTID" -- bash -lc 'cd /var/www/nextcloud && runuser -u www-data -- php occ status' 2>&1 | tee -a "$LOG" || true
 
   ok "Migration completed. OLD source remains at: $SOURCE_HOST"
   msg "Completed" "Nextcloud storage has been switched to:
@@ -416,6 +529,7 @@ migrate_to_raid1(){
     zfs "ZFS Mirror (рекомендуется для Proxmox)" \
     mdadm "Linux mdadm RAID1 + ext4")"
 
+  stage 1 8 "Проверка и установка необходимых компонентов"
   install_tools
 
   if ! yesno "План переноса" \
@@ -439,23 +553,37 @@ Continue?"; then
     if zpool list "$pool" >/dev/null 2>&1; then
       pool="$(input "ZFS pool" "Pool 'nextcloud-raid' already exists. Enter another pool name:" "nextcloud-raid2")"
     fi
+    stage 2 8 "Создание ZFS Mirror"
     create_zfs_mirror_target "$d1" "$d2" "$pool"
     target="/mnt/$pool"
   else
     [[ ! -e /dev/md0 ]] || die "/dev/md0 already exists. This wizard will not overwrite it."
     target="/mnt/nextcloud-raid1"
+    stage 2 8 "Создание mdadm RAID1"
     create_mdadm_mirror_target "$d1" "$d2" "$target"
   fi
 
-  CURRENT_STEP="Initial data copy"
-  info "Initial online copy to RAID1"
-  rsync -aHAX --numeric-ids --info=progress2 "$SOURCE_HOST"/ "$target"/
+  stage 3 8 "Первичное копирование данных"
+  CURRENT_STEP="Первичное копирование данных"
+  rsync -aHAX --numeric-ids --info=progress2 "$SOURCE_HOST"/ "$target"/ 2>&1 | tee -a "$LOG"
+  test ${PIPESTATUS[0]} -eq 0
 
-  CURRENT_STEP="Final migration"
+  stage 4 8 "Перевод Nextcloud в режим обслуживания"
+  CURRENT_STEP="Режим обслуживания"
   nextcloud_maintenance_on
+
+  stage 5 8 "Финальная синхронизация файлов"
   rsync_data "$SOURCE_HOST" "$target"
+
+  stage 6 8 "Переключение контейнера на новое хранилище"
   switch_bind_mount "$target"
+
+  stage 7 8 "Запуск Nextcloud"
   nextcloud_maintenance_off
+
+  stage 8 8 "Финальная проверка"
+  pct exec "$CTID" -- df -hT || true
+  pct exec "$CTID" -- bash -lc 'cd /var/www/nextcloud && runuser -u www-data -- php occ status' 2>&1 | tee -a "$LOG" || true
 
   ok "Nextcloud has been switched to RAID1 at $target"
   msg "RAID1 migration complete" "New storage:
@@ -767,6 +895,7 @@ Destructive actions always require separate confirmation." \
 
 main(){
   ensure_ui
+  animated_logo_once
   detect_system_disks
 
   while true; do
