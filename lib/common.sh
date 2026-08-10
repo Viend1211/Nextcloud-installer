@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.4.3"
+PROJECT_VERSION="0.4.4"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"

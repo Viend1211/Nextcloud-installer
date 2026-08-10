@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.3"
+VERSION="0.4.4"
 LOG="/var/log/proxmox-storage-migrator.log"
 BACKUP_DIR="/root/proxmox-storage-migrator-backups"
 
@@ -867,6 +867,298 @@ storage_advisor() {
   read -r -p "Press Enter..."
 }
 
+
+# ============================================================
+# Безопасное отключение старого data-диска
+# ============================================================
+
+disk_parent_device() {
+  local path="$1"
+  local src pk
+  src="$(findmnt -rn -T "$path" -o SOURCE 2>/dev/null || true)"
+  [[ -n "$src" ]] || return 1
+
+  pk="$(lsblk -ndo PKNAME "$src" 2>/dev/null || true)"
+  if [[ -n "$pk" ]]; then
+    echo "/dev/$pk"
+  elif [[ "$src" =~ ^/dev/(sd[a-z]+|nvme[0-9]+n[0-9]+) ]]; then
+    echo "${BASH_REMATCH[0]}"
+  else
+    echo "$src"
+  fi
+}
+
+disk_in_zfs() {
+  local disk="$1"
+  local real
+  real="$(readlink -f "$disk" 2>/dev/null || echo "$disk")"
+
+  command -v zpool >/dev/null 2>&1 || return 1
+
+  local item itemreal
+  while read -r item; do
+    [[ -n "$item" ]] || continue
+    itemreal="$(readlink -f "$item" 2>/dev/null || true)"
+    [[ "$itemreal" == "$real" ]] && return 0
+
+    # zpool may show by-id names.
+    if [[ "$item" == /dev/disk/by-id/* ]]; then
+      [[ "$(readlink -f "$item" 2>/dev/null || true)" == "$real" ]] && return 0
+    fi
+  done < <(zpool status -P 2>/dev/null | awk '$1 ~ "^/dev/" {print $1}')
+  return 1
+}
+
+disk_in_mdadm() {
+  local disk="$1"
+  local real
+  real="$(readlink -f "$disk" 2>/dev/null || echo "$disk")"
+
+  command -v mdadm >/dev/null 2>&1 || return 1
+
+  local md member memberreal
+  for md in /dev/md/* /dev/md[0-9]*; do
+    [[ -e "$md" ]] || continue
+    while read -r member; do
+      [[ -n "$member" ]] || continue
+      memberreal="$(readlink -f "$member" 2>/dev/null || true)"
+      [[ "$memberreal" == "$real" ]] && return 0
+    done < <(mdadm --detail "$md" 2>/dev/null | awk '/\/dev\// {print $NF}')
+  done
+  return 1
+}
+
+disk_used_by_any_lxc() {
+  local disk="$1"
+  local ctid line host parent
+  while read -r ctid _; do
+    [[ "$ctid" == "VMID" ]] && continue
+    while IFS= read -r line; do
+      [[ "$line" =~ ^mp[0-9]+: ]] || continue
+      host="${line#*: }"
+      host="${host%%,*}"
+      [[ -e "$host" || -d "$host" ]] || continue
+      parent="$(disk_parent_device "$host" 2>/dev/null || true)"
+      [[ "$parent" == "$disk" ]] && return 0
+    done < <(pct config "$ctid" 2>/dev/null || true)
+  done < <(pct list 2>/dev/null)
+  return 1
+}
+
+disk_has_active_mounts() {
+  local disk="$1"
+  lsblk -nrpo MOUNTPOINT "$disk" 2>/dev/null | sed '/^$/d' | grep -q .
+}
+
+disk_fstab_lines() {
+  local disk="$1"
+  local part uuid
+  while read -r part; do
+    [[ -b "$part" ]] || continue
+    uuid="$(blkid -s UUID -o value "$part" 2>/dev/null || true)"
+    [[ -n "$uuid" ]] && grep -n "UUID=$uuid" /etc/fstab 2>/dev/null || true
+  done < <(lsblk -lnpo NAME "$disk" | tail -n +2)
+}
+
+select_old_data_disk() {
+  local opts=()
+  local name size type model serial d mounts
+  detect_system_disks
+
+  while read -r name size type model serial; do
+    [[ "$type" == "disk" ]] || continue
+    d="/dev/$name"
+    is_system_disk "$d" && continue
+
+    mounts="$(lsblk -nrpo MOUNTPOINT "$d" | sed '/^$/d' | xargs || true)"
+    opts+=("$d" "$size | ${model:-Unknown} | ${serial:-no-serial} | ${mounts:-не смонтирован}")
+  done < <(lsblk -dn -o NAME,SIZE,TYPE,MODEL,SERIAL)
+
+  [[ ${#opts[@]} -gt 0 ]] || die "Не найдено подходящих несистемных дисков."
+  OLD_DISK="$(menu "Старый диск Nextcloud" \
+"Выберите диск, который нужно безопасно отключить.
+
+ВНИМАНИЕ: выбирайте только старый диск после успешной миграции." \
+"${opts[@]}")"
+}
+
+verify_nextcloud_new_storage() {
+  select_ct
+
+  CURRENT_STEP="Проверка Nextcloud и нового хранилища"
+  stage 1 5 "Проверка контейнера и Nextcloud"
+
+  pct status "$CTID" | grep -q "running" || die "Контейнер $CTID не запущен."
+
+  pct exec "$CTID" -- bash -lc \
+    'cd /var/www/nextcloud && runuser -u www-data -- php occ status' \
+    2>&1 | tee -a "$LOG"
+  test ${PIPESTATUS[0]} -eq 0
+
+  local current_mounts
+  current_mounts="$(pct config "$CTID" | grep -E '^mp[0-9]+:' || true)"
+  [[ -n "$current_mounts" ]] || die "У контейнера не найден bind mount с данными."
+
+  echo "$current_mounts" | tee -a "$LOG"
+}
+
+safe_remove_old_disk() {
+  verify_nextcloud_new_storage
+  select_old_data_disk
+  local d="$OLD_DISK"
+
+  stage 2 5 "Проверка выбранного старого диска"
+
+  local summary
+  summary="$(disk_summary "$d")"
+  echo "Проверяется: $summary" | tee -a "$LOG"
+
+  if is_system_disk "$d"; then
+    die "Выбран системный диск Proxmox. Операция запрещена."
+  fi
+
+  if disk_in_zfs "$d"; then
+    die "Диск $d входит в ZFS pool. Его нельзя удалять этим мастером."
+  fi
+
+  if disk_in_mdadm "$d"; then
+    die "Диск $d входит в mdadm RAID. Его нельзя удалять этим мастером."
+  fi
+
+  if disk_used_by_any_lxc "$d"; then
+    die "Диск $d всё ещё используется одним из LXC-контейнеров."
+  fi
+
+  stage 3 5 "Проверка mount и /etc/fstab"
+
+  local mounts fstab_refs
+  mounts="$(lsblk -nrpo NAME,MOUNTPOINT "$d" | awk '$2!="" {print $1" -> "$2}' || true)"
+  fstab_refs="$(disk_fstab_lines "$d" || true)"
+
+  if [[ -n "$mounts" || -n "$fstab_refs" ]]; then
+    local body="Диск больше не используется LXC/RAID, но обнаружены старые подключения.
+
+Текущие mount:
+${mounts:-нет}
+
+Записи /etc/fstab:
+${fstab_refs:-нет}
+
+Мастер может безопасно отключить эти старые подключения, НЕ стирая данные.
+
+Продолжить?"
+
+    if ! whiptail --title "Старые подключения" \
+      --yes-button "ОТКЛЮЧИТЬ" --no-button "НАЗАД" \
+      --yesno "$body" 24 92; then
+      return 0
+    fi
+
+    # Backup fstab before editing.
+    cp -a /etc/fstab "$BACKUP_DIR/fstab.$(date +%Y%m%d-%H%M%S).backup"
+
+    # Unmount all partitions from selected disk.
+    while read -r part mnt; do
+      [[ -n "${mnt:-}" ]] || continue
+      umount "$part" 2>/dev/null || umount "$mnt" 2>/dev/null || \
+        die "Не удалось размонтировать $part ($mnt)."
+    done < <(lsblk -lnpo NAME,MOUNTPOINT "$d" | tail -n +2)
+
+    # Remove fstab entries by UUID of disk partitions.
+    local part uuid
+    while read -r part; do
+      [[ -b "$part" ]] || continue
+      uuid="$(blkid -s UUID -o value "$part" 2>/dev/null || true)"
+      [[ -n "$uuid" ]] || continue
+      sed -i "\|UUID=$uuid|d" /etc/fstab
+    done < <(lsblk -lnpo NAME "$d" | tail -n +2)
+
+    mount -a
+  fi
+
+  stage 4 5 "Финальная проверка перед отключением"
+
+  if disk_used_by_any_lxc "$d"; then
+    die "После очистки подключений диск всё ещё используется LXC."
+  fi
+  if disk_has_active_mounts "$d"; then
+    die "На диске остались активные точки монтирования."
+  fi
+  if disk_in_zfs "$d" || disk_in_mdadm "$d"; then
+    die "Диск неожиданно обнаружен в RAID/ZFS. Операция остановлена."
+  fi
+
+  stage 5 5 "Выбор действия со старым диском"
+
+  local action
+  action="$(menu "Старый диск готов к отключению" \
+"Проверки успешно пройдены.
+
+Диск:
+$summary
+
+Он не используется LXC, ZFS/mdadm и не смонтирован.
+
+Что сделать?" \
+    keep "Оставить диск нетронутым (рекомендуется как резервная копия)" \
+    detach "Подготовить к физическому отключению, данные оставить" \
+    wipe "ПОЛНОСТЬЮ ОЧИСТИТЬ диск" \
+    back "Назад")" || return 0
+
+  case "$action" in
+    keep)
+      msg "Готово" "Диск не изменён.
+
+Можно оставить его как временную резервную копию."
+      ;;
+    detach)
+      sync
+      msg "Можно отключать" "Диск безопасно исключён из активной конфигурации:
+
+$d
+
+Данные НЕ удалены.
+
+Теперь можно выключить сервер и физически отключить этот диск."
+      ;;
+    wipe)
+      local confirm
+      if ! whiptail --title "ОПАСНО: очистка диска" \
+        --yes-button "ПЕРЕЙТИ К ОЧИСТКЕ" --no-button "ОТМЕНА" \
+        --yesno "БУДУТ БЕЗВОЗВРАТНО УДАЛЕНЫ ДАННЫЕ:
+
+$summary
+
+Nextcloud и RAID уже проверены и этот диск не используются.
+
+Продолжить?" 22 92; then
+        return 0
+      fi
+
+      confirm="$(input "Последнее подтверждение" \
+"Введите ТОЧНО имя диска для полного удаления:
+
+$d" "")"
+      [[ "$confirm" == "$d" ]] || die "Имя диска не совпало. Очистка отменена."
+
+      CURRENT_STEP="Полная очистка старого диска"
+      wipefs -af "$d"
+      sgdisk --zap-all "$d"
+      partprobe "$d" || true
+      sync
+
+      msg "Диск очищен" "Старый диск полностью очищен:
+
+$d
+
+Теперь его можно отключить или использовать заново."
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
 disk_management_menu() {
   while true; do
     local action
@@ -879,6 +1171,7 @@ Destructive actions always require separate confirmation." \
       addnc "Добавить отдельный диск в Nextcloud" \
       replace "Заменить текущий диск на больший без RAID" \
       raid1 "Перенести Nextcloud на два новых диска RAID1" \
+      removeold "Безопасно отключить старый диск после миграции" \
       addpve "Добавить диск как хранилище Proxmox" \
       rootfs "Увеличить системный диск LXC" \
       diag "Подробная диагностика" \
@@ -890,6 +1183,7 @@ Destructive actions always require separate confirmation." \
       addnc) add_independent_disk; return 0 ;;
       replace) replace_single_disk; return 0 ;;
       raid1) migrate_to_raid1; return 0 ;;
+      removeold) safe_remove_old_disk ;;
       addpve) add_proxmox_directory_disk ;;
       rootfs) expand_lxc_rootfs ;;
       diag) diagnostics ;;
