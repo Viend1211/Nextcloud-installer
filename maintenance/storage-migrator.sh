@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 LOG="/var/log/proxmox-storage-migrator.log"
 BACKUP_DIR="/root/proxmox-storage-migrator-backups"
 

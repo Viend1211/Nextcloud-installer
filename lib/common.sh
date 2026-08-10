@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-PROJECT_VERSION="0.4.1"
+PROJECT_VERSION="0.4.2"
 
 LOG_FILE="/var/log/nextcloud-installer.log"
 CURRENT_STEP="Startup"
@@ -9,15 +9,25 @@ TOTAL_STEPS=10
 
 init_logging() {
   mkdir -p "$(dirname "$LOG_FILE")"
-  touch "$LOG_FILE"
+
+  # Не смешиваем текущий запуск с логом предыдущего.
+  if [[ -s "$LOG_FILE" ]]; then
+    local stamp
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    cp -a "$LOG_FILE" "${LOG_FILE}.${stamp}.previous" 2>/dev/null || true
+  fi
+
+  : > "$LOG_FILE"
   chmod 600 "$LOG_FILE"
 
+  CURRENT_STEP="Запуск"
+  STEP_NO=0
+
   {
-    echo
     echo "============================================================"
     echo "Nextcloud Installer v$PROJECT_VERSION"
-    echo "Started: $(date -Is)"
-    echo "Host: $(hostname)"
+    echo "Запуск: $(date -Is)"
+    echo "Хост: $(hostname)"
     echo "============================================================"
   } >> "$LOG_FILE"
 }
@@ -61,27 +71,26 @@ log_text() {
 
 on_error() {
   local rc=$?
-  local line="${BASH_LINENO[0]:-unknown}"
-  local cmd="${BASH_COMMAND:-unknown}"
+  local line="${BASH_LINENO[0]:-неизвестно}"
+  local cmd="${BASH_COMMAND:-неизвестно}"
 
   set +e
   echo
   echo "============================================================"
-  echo " INSTALLATION FAILED"
+  echo " ОШИБКА УСТАНОВЩИКА"
   echo "============================================================"
-  echo " Step:    $CURRENT_STEP"
-  echo " Exit:    $rc"
-  echo " Line:    $line"
-  echo " Command: $cmd"
-  echo " Log:     $LOG_FILE"
+  echo " Этап:    $CURRENT_STEP"
+  echo " Код:     $rc"
+  echo " Строка:  $line"
+  echo " Команда: $cmd"
+  echo " Лог:     $LOG_FILE"
   echo
-  echo " Last 40 log lines:"
+  echo " Последние 40 строк текущего запуска:"
   echo "------------------------------------------------------------"
   tail -n 40 "$LOG_FILE" 2>/dev/null || true
   echo "------------------------------------------------------------"
   echo
-  echo "Nothing else will be changed automatically after this error."
-  echo "You can inspect the complete log with:"
+  echo "Полный лог текущего запуска:"
   echo "  less $LOG_FILE"
   echo
   exit "$rc"
